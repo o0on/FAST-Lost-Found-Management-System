@@ -1,24 +1,33 @@
 // Import the functions you need from the SDKs you need
-import { initializeApp } from "firebase/app";
-import { getAnalytics } from "firebase/analytics";
+import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
-// Your web app's Firebase configuration
+// Your web app's Firebase configuration - strictly from environment variables without defaults
 const firebaseConfig = {
-    apiKey: "AIzaSyAfe_3nO4nMJDgHMTmzKW7cxs4vb-cT5ME",
-    authDomain: "fast-lost-and-found.firebaseapp.com",
-    projectId: "fast-lost-and-found",
-    storageBucket: "fast-lost-and-found.firebasestorage.app",
-    messagingSenderId: "631567091200",
-    appId: "1:631567091200:web:f5b8453c055594c184fae5",
-    measurementId: "G-3KCXTRCN85"
+    apiKey: (import.meta.env.VITE_FIREBASE_API_KEY || "").trim(),
+    authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "").trim(),
+    projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID || "").trim(),
+    storageBucket: (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "").trim(),
+    messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "").trim(),
+    appId: (import.meta.env.VITE_FIREBASE_APP_ID || "").trim(),
+    measurementId: (import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || "").trim()
 };
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);
-const auth = getAuth(app);
-const db = getFirestore(app);
+let app = null;
+let auth = null;
+let db = null;
+
+try {
+    if (firebaseConfig.apiKey) {
+        app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+        auth = getAuth(app);
+        db = getFirestore(app);
+    }
+} catch (error) {
+    console.error("Firebase initialization failed with the provided configuration:", error);
+}
+
+const analytics = null;
 
 export { app, analytics, auth, db };

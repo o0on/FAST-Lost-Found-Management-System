@@ -163,10 +163,38 @@ export default function App() {
   // New Features: Toast, Item Details, Sort, My Posts
   const [toasts, setToasts] = useState([]);
   const [selectedItem, setSelectedItem] = useState(null);
+  const [activeModalImage, setActiveModalImage] = useState(null);
   const [showItemDetails, setShowItemDetails] = useState(false);
   const [sortBy, setSortBy] = useState("newest");
   const [showMyPosts, setShowMyPosts] = useState(false);
   const [itemOwner, setItemOwner] = useState(null);
+
+  // Accessible In-App Confirmation Modal State
+  const [confirmState, setConfirmState] = useState({
+    isOpen: false,
+    title: '',
+    message: '',
+    confirmText: 'Confirm',
+    cancelText: 'Cancel',
+    danger: true,
+    onConfirm: null
+  });
+
+  const openConfirm = ({ title, message, confirmText = 'Confirm', cancelText = 'Cancel', danger = true, onConfirm }) => {
+    setConfirmState({
+      isOpen: true,
+      title,
+      message,
+      confirmText,
+      cancelText,
+      danger,
+      onConfirm
+    });
+  };
+
+  const closeConfirm = () => {
+    setConfirmState(prev => ({ ...prev, isOpen: false }));
+  };
 
 
 
@@ -233,10 +261,33 @@ export default function App() {
     return () => unsubscribe();
   }, [isLoggedIn]);
 
+  // Story #23: Fetch Audit Logs for Admins (Real-time)
+  useEffect(() => {
+    if (!db || !isLoggedIn || profile?.role !== 'admin') return;
+
+    const unsubscribe = onSnapshot(collection(db, "audit_logs"), (snapshot) => {
+      const logs = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })).sort((a, b) => {
+        const dateA = a.timestamp?.toDate ? a.timestamp.toDate().getTime() : (new Date(a.timestamp || 0).getTime());
+        const dateB = b.timestamp?.toDate ? b.timestamp.toDate().getTime() : (new Date(b.timestamp || 0).getTime());
+        return dateB - dateA;
+      });
+      setAuditLogs(logs);
+    }, (error) => {
+      console.error("Error fetching audit logs:", error);
+    });
+
+    return () => unsubscribe();
+  }, [isLoggedIn, profile?.role]);
+
 
 
   // Listen for auth state changes
   useEffect(() => {
+    if (!auth) return;
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         // Check if user is suspended before allowing access
@@ -271,13 +322,15 @@ export default function App() {
 
           if (userDoc.exists()) {
             const userData = userDoc.data();
+            const isAdminEmail = (user.email || '').toLowerCase() === 'admin@isb.nu.edu.pk';
+            const effectiveRole = userData.role === 'admin' || isAdminEmail ? 'admin' : (userData.role || 'user');
             setProfile({
               name: userData.name || user.displayName || "",
               email: userData.email || user.email,
               school: userData.school || "",
               department: userData.department || "",
               phone: userData.phone || "",
-              role: userData.role || 'user',
+              role: effectiveRole,
               isSuspended: userData.isSuspended || false
             });
           } else {
@@ -287,23 +340,26 @@ export default function App() {
 
             if (!querySnapshot.empty) {
               const userData = querySnapshot.docs[0].data();
+              const isAdminEmail = (user.email || '').toLowerCase() === 'admin@isb.nu.edu.pk';
+              const effectiveRole = userData.role === 'admin' || isAdminEmail ? 'admin' : (userData.role || 'user');
               setProfile({
                 name: userData.name || user.displayName || "",
                 email: userData.email || user.email,
                 school: userData.school || "",
                 department: userData.department || "",
                 phone: userData.phone || "",
-                role: userData.role || 'user',
+                role: effectiveRole,
                 isSuspended: userData.isSuspended || false
               });
             } else {
+              const isAdminEmail = (user.email || '').toLowerCase() === 'admin@isb.nu.edu.pk';
               setProfile({
                 name: user.displayName || "",
                 email: user.email,
                 school: "",
                 department: "",
                 phone: "",
-                role: 'user',
+                role: isAdminEmail ? 'admin' : 'user',
                 isSuspended: false
               });
             }
@@ -358,12 +414,15 @@ export default function App() {
     const matchesTab = activeTab === "all" || item.status === activeTab;
 
     // Filter for My Posts if enabled
-    if (showMyPosts && item.ownerEmail !== profile?.email) {
+    const currentEmail = (profile?.email || auth.currentUser?.email || '').trim().toLowerCase();
+    const itemOwnerEmail = (item.ownerEmail || '').trim().toLowerCase();
+
+    if (showMyPosts && (!currentEmail || itemOwnerEmail !== currentEmail)) {
       return false;
     }
 
     // Story 14: Admin Dashboard - only show approved items to regular users, or my own items regardless of status
-    const isApproved = item.approvalStatus === 'approved' || item.ownerEmail === profile?.email || profile?.role === 'admin';
+    const isApproved = item.approvalStatus === 'approved' || (itemOwnerEmail && currentEmail && itemOwnerEmail === currentEmail) || profile?.role === 'admin';
 
     // Story #22: Filter out archived items for regular users (admins can see all)
     const isArchived = item.archived && profile?.role !== 'admin';
@@ -394,11 +453,21 @@ export default function App() {
   const handleUpdateStatus = async (itemId, newStatus) => {
     try {
       const itemRef = doc(db, "items", itemId);
-      await updateDoc(itemRef, { status: newStatus });
+      const isReturned = newStatus === 'returned';
+      const updatePayload = {
+        status: newStatus,
+        claimed: isReturned
+      };
+      await updateDoc(itemRef, updatePayload);
 
       setItems(items.map(item =>
-        item.id === itemId ? { ...item, status: newStatus } : item
+        item.id === itemId ? { ...item, ...updatePayload } : item
       ));
+
+      if (selectedItem && selectedItem.id === itemId) {
+        setSelectedItem(prev => ({ ...prev, ...updatePayload }));
+      }
+
       showToast(`Item marked as ${newStatus}`, 'success');
     } catch (error) {
       console.error("Error updating status:", error);
@@ -406,7 +475,7 @@ export default function App() {
     }
   };
 
-  // Story #8: Mark Item as Claimed (Legacy, now part of status tracking but kept for compatibility if needed)
+  // Story #8: Mark Item as Claimed
   const handleMarkClaimed = async (itemId) => {
     handleUpdateStatus(itemId, 'returned');
   };
@@ -414,44 +483,51 @@ export default function App() {
   // Item Details Modal
   const handleItemClick = (item) => {
     // Find owner info if available
-    const owner = users.find(u => u.email === item.ownerEmail);
+    const owner = users.find(u => (u.email || '').trim().toLowerCase() === (item.ownerEmail || '').trim().toLowerCase());
     setItemOwner(owner || null);
     setSelectedItem(item);
+    setActiveModalImage(item.image || (item.images && item.images[0]) || null);
     setShowItemDetails(true);
   };
 
   // Contact Owner
   const handleContactOwner = (item) => {
-    const owner = users.find(u => u.email === item.ownerEmail);
-    if (owner) {
-      if (owner.phone) {
-        window.open(`tel:${owner.phone}`, '_self');
-        showToast(`Calling ${owner.name}...`, 'info');
-      } else if (owner.email) {
-        window.open(`mailto:${owner.email}?subject=Regarding: ${item.title}`, '_self');
-        showToast(`Opening email to ${owner.name}...`, 'info');
-      } else {
-        showToast('Owner contact information not available', 'error');
-      }
+    const owner = users.find(u => (u.email || '').trim().toLowerCase() === (item.ownerEmail || '').trim().toLowerCase());
+    const contactEmail = owner?.email || item.ownerEmail;
+    const contactPhone = owner?.phone;
+    const ownerName = owner?.name || item.ownerName || 'Owner';
+
+    if (contactPhone) {
+      window.location.href = `tel:${contactPhone}`;
+      showToast(`Calling ${ownerName}...`, 'info');
+    } else if (contactEmail) {
+      const subject = encodeURIComponent(`Regarding FAST Lost & Found: ${item.title}`);
+      const body = encodeURIComponent(`Hi ${ownerName},\n\nI am contacting you regarding your post "${item.title}" on the FAST Islamabad Lost & Found portal.`);
+      window.location.href = `mailto:${contactEmail}?subject=${subject}&body=${body}`;
+      showToast(`Opening email to ${ownerName}...`, 'info');
     } else {
-      showToast('Owner information not found', 'error');
+      showToast('Owner contact information not available', 'error');
     }
   };
 
   // Story #15: Edit Item
   const handleEditItem = (item) => {
     setEditingItem(item);
+    const existingImages = item.images && item.images.length > 0
+      ? item.images
+      : (item.image && item.image !== PLACEHOLDER_IMAGE ? [item.image] : []);
+
     setNewPost({
       title: item.title || "",
       description: item.description || "",
       category: item.category || "Electronics",
       location: item.location || "Library",
       status: item.status || "lost",
-      images: item.images ? item.images.map((url, idx) => ({
+      images: existingImages.map((url, idx) => ({
         id: Date.now() + idx,
         url: url,
         file: null // Existing images don't need re-upload
-      })) : []
+      }))
     });
     setShowEditModal(true);
     setShowItemDetails(false);
@@ -463,6 +539,11 @@ export default function App() {
 
     if (!newPost.title.trim() || !newPost.description.trim()) {
       showToast('Please fill in title and description', 'error');
+      return;
+    }
+
+    if (!db) {
+      showToast('Database is not initialized. Please verify configuration.', 'error');
       return;
     }
 
@@ -513,6 +594,11 @@ export default function App() {
         item.id === editingItem.id ? { ...item, ...updateData } : item
       ));
 
+      if (selectedItem && selectedItem.id === editingItem.id) {
+        setSelectedItem(prev => ({ ...prev, ...updateData }));
+        setActiveModalImage(updateData.image);
+      }
+
       // Clean up temporary object URLs for new images
       newImageFiles.forEach(img => {
         if (img.url && img.url.startsWith('blob:')) {
@@ -535,30 +621,40 @@ export default function App() {
       });
     } catch (error) {
       console.error("Error updating document: ", error);
-      showToast("Failed to update item", "error");
+      showToast(error.message || "Failed to update item", "error");
     }
   };
 
-  // Delete Item (only for owner)
-  const handleDeleteItem = async (itemId) => {
-    if (window.confirm('Are you sure you want to delete this item?')) {
-      try {
-        const itemToDelete = items.find(item => item.id === itemId);
-        await deleteDoc(doc(db, "items", itemId));
+  // Delete Item (only for owner or admin)
+  const handleDeleteItem = (itemId) => {
+    openConfirm({
+      title: 'Delete Item',
+      message: 'Are you sure you want to permanently delete this item? This action cannot be undone.',
+      confirmText: 'Delete',
+      danger: true,
+      onConfirm: async () => {
+        if (!db) {
+          showToast('Database is not initialized.', 'error');
+          return;
+        }
+        try {
+          const itemToDelete = items.find(item => item.id === itemId);
+          await deleteDoc(doc(db, "items", itemId));
 
-        // Story #23: Log activity
-        await logActivity('delete', 'item', itemId, {
-          title: itemToDelete?.title || 'Unknown'
-        });
+          // Story #23: Log activity
+          await logActivity('delete', 'item', itemId, {
+            title: itemToDelete?.title || 'Unknown'
+          });
 
-        setItems(items.filter(item => item.id !== itemId));
-        setShowItemDetails(false);
-        showToast('Item deleted successfully', 'success');
-      } catch (error) {
-        console.error("Error deleting item:", error);
-        showToast('Failed to delete item', 'error');
+          setItems(items.filter(item => item.id !== itemId));
+          setShowItemDetails(false);
+          showToast('Item deleted successfully', 'success');
+        } catch (error) {
+          console.error("Error deleting item:", error);
+          showToast('Failed to delete item', 'error');
+        }
       }
-    }
+    });
   };
 
   // Story #23: Log activity to audit log
@@ -610,6 +706,10 @@ export default function App() {
   };
 
   const removeImageFromPost = (imageId) => {
+    const imgToRemove = newPost.images.find(img => img.id === imageId);
+    if (imgToRemove && imgToRemove.url && imgToRemove.url.startsWith('blob:')) {
+      URL.revokeObjectURL(imgToRemove.url);
+    }
     setNewPost({
       ...newPost,
       images: newPost.images.filter(img => img.id !== imageId)
@@ -619,6 +719,11 @@ export default function App() {
   const handleCreatePost = async () => {
     if (!newPost.title.trim() || !newPost.description.trim()) {
       showToast('Please fill in title and description', 'error');
+      return;
+    }
+
+    if (!db) {
+      showToast('Database is not initialized. Please verify configuration.', 'error');
       return;
     }
 
@@ -728,7 +833,7 @@ export default function App() {
       });
     } catch (error) {
       console.error("Error adding document: ", error);
-      showToast("Failed to create post", "error");
+      showToast(error.message || "Failed to create post", "error");
     }
   };
 
@@ -736,6 +841,11 @@ export default function App() {
   const handleSaveAnnouncement = async () => {
     if (!announcementForm.title.trim() || !announcementForm.message.trim()) {
       showToast('Please fill in title and message', 'error');
+      return;
+    }
+
+    if (!db) {
+      showToast('Database is not initialized.', 'error');
       return;
     }
 
@@ -780,21 +890,31 @@ export default function App() {
   };
 
   // Story #20: Delete Announcement
-  const handleDeleteAnnouncement = async (announcementId) => {
-    if (window.confirm('Are you sure you want to delete this announcement?')) {
-      try {
-        const announcement = announcements.find(a => a.id === announcementId);
-        await deleteDoc(doc(db, "announcements", announcementId));
-        // Story #23: Log activity
-        await logActivity('delete', 'announcement', announcementId, {
-          title: announcement?.title || 'Unknown'
-        });
-        showToast('Announcement deleted successfully', 'success');
-      } catch (error) {
-        console.error("Error deleting announcement:", error);
-        showToast('Failed to delete announcement', 'error');
+  const handleDeleteAnnouncement = (announcementId) => {
+    openConfirm({
+      title: 'Delete Announcement',
+      message: 'Are you sure you want to delete this announcement?',
+      confirmText: 'Delete',
+      danger: true,
+      onConfirm: async () => {
+        if (!db) {
+          showToast('Database is not initialized.', 'error');
+          return;
+        }
+        try {
+          const announcement = announcements.find(a => a.id === announcementId);
+          await deleteDoc(doc(db, "announcements", announcementId));
+          // Story #23: Log activity
+          await logActivity('delete', 'announcement', announcementId, {
+            title: announcement?.title || 'Unknown'
+          });
+          showToast('Announcement deleted successfully', 'success');
+        } catch (error) {
+          console.error("Error deleting announcement:", error);
+          showToast('Failed to delete announcement', 'error');
+        }
       }
-    }
+    });
   };
 
   // Story #2: Update profile
@@ -839,6 +959,13 @@ export default function App() {
       return;
     }
 
+    if (!auth || !db) {
+      const msg = "Firebase is not configured or failed to initialize. Please check your credentials.";
+      setAuthError(msg);
+      showToast(msg, "error");
+      return;
+    }
+
     try {
       if (isRegistering) {
         // Registration flow
@@ -846,6 +973,9 @@ export default function App() {
           setAuthError("Please fill in all required fields (Name, School, Department).");
           return;
         }
+
+        const cleanEmail = authForm.email.trim().toLowerCase();
+        const initialRole = cleanEmail === 'admin@isb.nu.edu.pk' ? 'admin' : 'user';
 
         const userCredential = await createUserWithEmailAndPassword(auth, authForm.email, authForm.password);
         const user = userCredential.user;
@@ -857,22 +987,22 @@ export default function App() {
         // Create user profile in Firestore
         await setDoc(doc(db, "users", user.uid), {
           name: authForm.name,
-          email: authForm.email,
+          email: cleanEmail,
           school: authForm.school,
           department: authForm.department,
           phone: authForm.phone,
-          role: 'user', // Story 16: Default role
+          role: initialRole, // Automatically assign admin if admin@isb.nu.edu.pk
           isSuspended: false // Story 16: Suspension status
         });
 
         // Update local state
         setProfile({
           name: authForm.name,
-          email: authForm.email,
+          email: cleanEmail,
           school: authForm.school,
           department: authForm.department,
           phone: authForm.phone,
-          role: 'user',
+          role: initialRole,
           isSuspended: false
         });
         showToast('Account created successfully! Welcome!', 'success');
@@ -909,6 +1039,10 @@ export default function App() {
         errorMessage = "Invalid email or password.";
       } else if (error.code === 'auth/weak-password') {
         errorMessage = "Password should be at least 6 characters.";
+      } else if (error.code === 'auth/invalid-api-key' || error.code === 'auth/api-key-not-valid') {
+        errorMessage = "Invalid Firebase API key provided.";
+      } else if (error.message) {
+        errorMessage = error.message;
       }
       setAuthError(errorMessage);
       showToast(errorMessage, 'error');
@@ -925,19 +1059,27 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      if (auth) {
+        await signOut(auth);
+      }
       // Clean up blob URLs for safety, though app state is reset
       items.forEach(item => {
         if (item.image && item.image.startsWith('blob:')) {
           URL.revokeObjectURL(item.image);
         }
       });
-      // setIsLoggedIn(false); // Handled by onAuthStateChanged
-      // setShowAuthModal(true); // Handled by onAuthStateChanged
+      setShowAdminDashboard(false);
+      setShowItemDetails(false);
+      setShowProfileModal(false);
+      setShowCreatePostModal(false);
+      setShowEditModal(false);
+      setShowAnnouncementModal(false);
+      setSelectedItem(null);
+      setEditingItem(null);
+      setShowMyPosts(false);
+      setShowAuditLogs(false);
       setIsRegistering(false); // Reset to login page
       setAuthForm({ email: "", password: "", name: "", school: "", department: "", phone: "" });
-      // localStorage.removeItem('isLoggedIn'); // No longer needed
-      // localStorage.removeItem('currentUser'); // No longer needed
       showToast('Logged out successfully', 'info');
     } catch (error) {
       console.error("Logout error:", error);
@@ -969,7 +1111,7 @@ export default function App() {
 
   // Custom Card Component (Item Display)
   const ItemCard = ({ item }) => {
-    const isOwner = item.ownerEmail === profile?.email;
+    const isOwner = Boolean(item.ownerEmail && (item.ownerEmail.trim().toLowerCase() === (profile?.email || auth.currentUser?.email || '').trim().toLowerCase()));
     const isAdmin = profile?.role === 'admin';
     const frequentlyLostCategories = getFrequentlyLostCategories();
     const isFrequentlyLost = item.status === 'lost' && frequentlyLostCategories.includes(item.category);
@@ -1090,13 +1232,24 @@ export default function App() {
             const email = e.target.email.value;
             const password = e.target.password.value;
 
+            if (!auth || !db) {
+              showToast("Firebase is not initialized. Please verify your configuration.", "error");
+              return;
+            }
+
             try {
               const userCredential = await signInWithEmailAndPassword(auth, email, password);
               const user = userCredential.user;
 
               // Check role
               const userDoc = await getDoc(doc(db, "users", user.uid));
-              if (userDoc.exists() && userDoc.data().role === 'admin') {
+              const isAdminEmail = (email || '').trim().toLowerCase() === 'admin@isb.nu.edu.pk';
+              const isAdmin = (userDoc.exists() && userDoc.data().role === 'admin') || isAdminEmail;
+
+              if (isAdmin) {
+                if (isAdminEmail && userDoc.exists() && userDoc.data().role !== 'admin') {
+                  await updateDoc(doc(db, "users", user.uid), { role: 'admin' });
+                }
                 showToast('Welcome back, Admin!', 'success');
                 setCurrentView('home');
                 setShowAdminDashboard(true); // Auto-open dashboard
@@ -1395,7 +1548,17 @@ export default function App() {
 
       <header className={`${darkMode ? 'bg-gray-800 shadow-gray-900/20' : 'bg-white shadow-gray-200/50'} sticky top-0 z-40 shadow-lg backdrop-blur-md bg-opacity-90 transition-colors duration-300`}>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
-          <div className="flex items-center gap-3 cursor-pointer group" onClick={() => window.location.reload()}>
+          <div
+            className="flex items-center gap-3 cursor-pointer group"
+            onClick={() => {
+              setSearchQuery('');
+              setSelectedCategory('All');
+              setSelectedLocation('All');
+              setActiveTab('all');
+              setShowMyPosts(false);
+              setCurrentView('home');
+            }}
+          >
             <div className={`p-2 rounded-lg ${darkMode ? 'bg-blue-600' : 'bg-blue-600'} group-hover:scale-110 transition-transform duration-300`}>
               <Search className="text-white" size={24} />
             </div>
@@ -2175,7 +2338,9 @@ export default function App() {
                       const a = document.createElement('a');
                       a.href = url;
                       a.download = `category-report-${new Date().toISOString().split('T')[0]}.csv`;
+                      document.body.appendChild(a);
                       a.click();
+                      document.body.removeChild(a);
                       window.URL.revokeObjectURL(url);
                       showToast('Category report downloaded', 'success');
                     }}
@@ -2344,21 +2509,26 @@ export default function App() {
                         return;
                       }
 
-                      if (!window.confirm(`Archive ${oldItems.length} item(s) older than 90 days?`)) return;
-
-                      try {
-                        const archivePromises = oldItems.map(item =>
-                          updateDoc(doc(db, "items", item.id), {
-                            archived: true,
-                            archivedAt: new Date()
-                          })
-                        );
-                        await Promise.all(archivePromises);
-                        showToast(`${oldItems.length} item(s) archived successfully`, 'success');
-                      } catch (error) {
-                        console.error("Error archiving items:", error);
-                        showToast('Failed to archive items', 'error');
-                      }
+                      openConfirm({
+                        title: 'Archive Old Items',
+                        message: `Archive ${oldItems.length} item(s) older than 90 days? These items will be hidden from regular search.`,
+                        confirmText: 'Archive',
+                        onConfirm: async () => {
+                          try {
+                            const archivePromises = oldItems.map(item =>
+                              updateDoc(doc(db, "items", item.id), {
+                                archived: true,
+                                archivedAt: new Date()
+                              })
+                            );
+                            await Promise.all(archivePromises);
+                            showToast(`${oldItems.length} item(s) archived successfully`, 'success');
+                          } catch (error) {
+                            console.error("Error archiving items:", error);
+                            showToast('Failed to archive items', 'error');
+                          }
+                        }
+                      });
                     }}
                     className="px-3 py-1.5 bg-gray-600 text-white text-sm rounded-lg hover:bg-gray-700 transition"
                   >
@@ -2386,7 +2556,7 @@ export default function App() {
               <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">User Management</h3>
               <div className="space-y-4">
                 {users.map(user => {
-                  const userItems = items.filter(item => item.ownerEmail === user.email);
+                  const userItems = items.filter(item => (item.ownerEmail || '').toLowerCase() === (user.email || '').toLowerCase());
                   return (
                     <div key={user.email} className="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
                       <div className="flex justify-between items-start mb-2">
@@ -2424,7 +2594,9 @@ export default function App() {
                               const a = document.createElement('a');
                               a.href = url;
                               a.download = `user-history-${user.email.replace('@', '-at-')}-${new Date().toISOString().split('T')[0]}.csv`;
+                              document.body.appendChild(a);
                               a.click();
+                              document.body.removeChild(a);
                               window.URL.revokeObjectURL(url);
                               showToast(`History report downloaded for ${user.name}`, 'success');
                             }}
@@ -2435,26 +2607,32 @@ export default function App() {
                           </button>
                           {user.role !== 'admin' && (
                             <button
-                              onClick={async () => {
-                                if (user.id === auth.currentUser.uid) {
+                              onClick={() => {
+                                if (user.id === auth.currentUser?.uid) {
                                   showToast("Cannot suspend your own admin account.", "error");
                                   return;
                                 }
                                 const action = user.isSuspended ? 'Unsuspend' : 'Suspend';
-                                if (!window.confirm(`Are you sure you want to ${action} this user?`)) return;
-
-                                try {
-                                  await updateDoc(doc(db, "users", user.id), { isSuspended: !user.isSuspended });
-                                  // Story #23: Log activity
-                                  await logActivity(user.isSuspended ? 'unsuspend' : 'suspend', 'user', user.id, {
-                                    userEmail: user.email,
-                                    userName: user.name
-                                  });
-                                  showToast(`User ${action.toLowerCase()}ed successfully!`, 'success');
-                                } catch (error) {
-                                  console.error(`Error ${action.toLowerCase()}ing user:`, error);
-                                  showToast(`Failed to ${action.toLowerCase()} user.`, 'error');
-                                }
+                                openConfirm({
+                                  title: `${action} User`,
+                                  message: `Are you sure you want to ${action.toLowerCase()} ${user.name} (${user.email})?`,
+                                  confirmText: action,
+                                  danger: !user.isSuspended,
+                                  onConfirm: async () => {
+                                    try {
+                                      await updateDoc(doc(db, "users", user.id), { isSuspended: !user.isSuspended });
+                                      // Story #23: Log activity
+                                      await logActivity(user.isSuspended ? 'unsuspend' : 'suspend', 'user', user.id, {
+                                        userEmail: user.email,
+                                        userName: user.name
+                                      });
+                                      showToast(`User ${action.toLowerCase()}ed successfully!`, 'success');
+                                    } catch (error) {
+                                      console.error(`Error ${action.toLowerCase()}ing user:`, error);
+                                      showToast(`Failed to ${action.toLowerCase()} user.`, 'error');
+                                    }
+                                  }
+                                });
                               }}
                               className={`px-3 py-1 border rounded hover:opacity-80 transition ${user.isSuspended ? 'border-green-300 text-green-600 hover:bg-green-50' : 'border-red-300 text-red-600 hover:bg-red-50'}`}
                             >
@@ -2481,50 +2659,6 @@ export default function App() {
                 </div>
                 {showAuditLogs && (
                   <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 max-h-96 overflow-y-auto">
-                    {auditLogs.length === 0 ? (
-                      <p className="text-gray-500 dark:text-gray-400">No audit logs yet.</p>
-                    ) : (
-                      <div className="space-y-2">
-                        {auditLogs.slice(0, 50).map(log => (
-                          <div key={log.id} className="text-xs border-b border-gray-200 dark:border-gray-600 pb-2">
-                            <div className="flex justify-between items-start">
-                              <div className="flex-1">
-                                <span className="font-semibold text-gray-900 dark:text-white">{log.action.toUpperCase()}</span>
-                                {' '}
-                                <span className="text-gray-600 dark:text-gray-400">{log.resourceType}</span>
-                                {' '}
-                                <span className="text-gray-500 dark:text-gray-500">by {log.userName || log.userEmail}</span>
-                              </div>
-                              <span className="text-gray-500 dark:text-gray-500 ml-2">
-                                {log.timestamp?.toDate?.()?.toLocaleString() || 'N/A'}
-                              </span>
-                            </div>
-                            {log.details && Object.keys(log.details).length > 0 && (
-                              <div className="text-gray-500 dark:text-gray-400 mt-1 pl-4">
-                                {JSON.stringify(log.details)}
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Story #23: Audit Logs */}
-              <div className="mt-8">
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Audit Logs</h3>
-                  <button
-                    onClick={() => setShowAuditLogs(!showAuditLogs)}
-                    className="px-3 py-1.5 bg-gray-600 text-white text-sm rounded-lg hover:bg-gray-700 transition"
-                  >
-                    {showAuditLogs ? 'Hide' : 'View'} Audit Logs
-                  </button>
-                </div>
-                {showAuditLogs && (
-                  <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 max-h-96 overflow-y-auto mb-6">
                     {auditLogs.length === 0 ? (
                       <p className="text-gray-500 dark:text-gray-400">No audit logs yet.</p>
                     ) : (

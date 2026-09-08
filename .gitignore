@@ -18,6 +18,8 @@ dist-ssr
 functions/.env
 
 # Editor directories and files
+bun.lock
+metadata.json
 .vscode/*
 !.vscode/extensions.json
 .idea

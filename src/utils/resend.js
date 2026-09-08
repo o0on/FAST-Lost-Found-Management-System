@@ -15,9 +15,10 @@
 export const sendMatchEmail = async (params) => {
   const { toEmail, toName, matchedItem, userItem } = params;
 
-  // This will be implemented in Firebase Cloud Functions
-  // For now, we'll create a callable function structure
-  
+  const origin = typeof window !== 'undefined' && window.location?.origin
+    ? window.location.origin
+    : '';
+
   const emailData = {
     to: toEmail,
     subject: `🔔 Match Found: ${matchedItem.title}`,
@@ -55,7 +56,7 @@ export const sendMatchEmail = async (params) => {
               
               <p><strong>Your Item:</strong> ${userItem.title}</p>
               
-              <a href="${window.location.origin}/item/${matchedItem.id}" class="button">View Item Details</a>
+              <a href="${origin}/#item-${matchedItem.id}" class="button">View Item Details</a>
               
               <p style="margin-top: 20px; font-size: 14px; color: #6b7280;">
                 This is an automated notification from FAST Lost & Found System.
@@ -83,7 +84,7 @@ export const sendMatchEmail = async (params) => {
       
       Your Item: ${userItem.title}
       
-      View item: ${window.location.origin}/item/${matchedItem.id}
+      View item: ${origin}/#item-${matchedItem.id}
       
       ---
       FAST University Islamabad - Lost & Found System

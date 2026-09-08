@@ -1,7 +1,11 @@
-const CLOUD_NAME = "davcuzq95";
-const UPLOAD_PRESET = "sddwhr9r";
+const CLOUD_NAME = (import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "").trim();
+const UPLOAD_PRESET = (import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || "").trim();
 
 export const uploadToCloudinary = async (file) => {
+    if (!CLOUD_NAME || !UPLOAD_PRESET) {
+        throw new Error("Cloudinary configuration missing: please configure VITE_CLOUDINARY_CLOUD_NAME and VITE_CLOUDINARY_UPLOAD_PRESET.");
+    }
+
     const formData = new FormData();
     formData.append("file", file);
     formData.append("upload_preset", UPLOAD_PRESET);
@@ -16,7 +20,9 @@ export const uploadToCloudinary = async (file) => {
         );
 
         if (!response.ok) {
-            throw new Error("Failed to upload image");
+            const errData = await response.json().catch(() => ({}));
+            const errMsg = errData?.error?.message || `Image upload failed (${response.status})`;
+            throw new Error(errMsg);
         }
 
         const data = await response.json();
