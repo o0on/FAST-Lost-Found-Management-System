@@ -15,8 +15,8 @@ try {
 admin.initializeApp();
 
 // Initialize Resend with API key
-// Priority: 1. Environment variable, 2. Firebase config, 3. Hardcoded (for development)
-const resendApiKey = process.env.RESEND_API_KEY || functions.config().resend?.api_key || 're_42M9zF28_4kqCituFyePofTQXhzEa98R3';
+// Priority: 1. Environment variable, 2. Firebase config
+const resendApiKey = process.env.RESEND_API_KEY || functions.config().resend?.api_key;
 
 if (!resendApiKey) {
   console.error('RESEND_API_KEY not found. Please set it in environment variables.');
